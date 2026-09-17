@@ -1,0 +1,5 @@
+# ipywidgets is deliberately absent: Quarto would bundle its runtime into the page
+duckdb
+pandas
+plotly
+jupyter

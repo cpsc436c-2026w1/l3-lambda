@@ -1,0 +1,210 @@
+---
+title: "GDELT events, computed on the fly"
+author: "CPSC 436C"
+format:
+  dashboard:
+    theme: [default, custom.scss]
+    orientation: rows
+    html-math-method: plain
+    embed-resources: true
+    nav-buttons:
+      - icon: database
+        href: https://www.gdeltproject.org/data.html
+---
+
+```{python}
+#| tags: [parameters]
+
+# The day folder on S3. DuckDB reads it directly, no download step.
+EVENTS = "s3://436c-2026w1-weather/gdelt/events-daily/day=*/part.parquet"
+DAYS = 7           # size of the window, in days back from the latest day on S3
+TOP_COUNTRIES = 15 # bars in the country chart
+TONE_COUNTRIES = 6 # lines in the tone chart
+```
+
+```{python}
+#| output: false
+
+import time
+import duckdb
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+from IPython.display import Markdown
+
+NAVY, AMBER, GREEN, PAPER = "#002145", "#f2b134", "#2b7a3c", "#fbf9f4"
+
+# Quarto's Jupyter engine shows the value of every expression in a cell, so a bare
+# fig.update_layout(...) would draw a second copy of the chart. One output per cell.
+get_ipython().ast_node_interactivity = "last_expr"
+
+con = duckdb.connect()
+con.execute("CREATE SECRET (TYPE s3, PROVIDER credential_chain, REGION 'ca-central-1')")
+con.execute(f"CREATE VIEW events AS SELECT * FROM read_parquet('{EVENTS}', hive_partitioning => true)")
+
+elapsed, queries = 0.0, 0
+
+def q(sql: str) -> pd.DataFrame:
+    """Run a query against S3 and keep score of how long we spent in DuckDB."""
+    global elapsed, queries
+    t0 = time.perf_counter()
+    df = con.execute(sql).df()
+    elapsed += time.perf_counter() - t0
+    queries += 1
+    return df
+
+# The window: the last DAYS days present on S3. Each file holds one day, and its
+# own Day column carries the same date as the day= folder, so filtering on Day
+# lets DuckDB skip whole files -- the point of the hive layout.
+bounds = q(f"""
+    SELECT max(Day) AS last_day, max(Day) - INTERVAL {DAYS - 1} DAY AS first_day
+    FROM events
+""").iloc[0]
+WINDOW = f"Day BETWEEN DATE '{bounds.first_day:%Y-%m-%d}' AND DATE '{bounds.last_day:%Y-%m-%d}'"
+
+totals = q(f"""
+    SELECT count(*) AS rows_scanned, count(DISTINCT Day) AS days
+    FROM events WHERE {WINDOW}
+""").iloc[0]
+```
+
+```{python}
+#| output: false
+
+per_hour = q(f"""
+    SELECT date_trunc('hour', strptime(DATEADDED, '%Y%m%d%H%M%S')) AS hour,
+           count(*) AS events
+    FROM events WHERE {WINDOW}
+    GROUP BY 1 ORDER BY 1
+""")
+
+top_countries = q(f"""
+    SELECT ActionGeo_CountryCode AS country, count(*) AS events
+    FROM events
+    WHERE {WINDOW} AND ActionGeo_CountryCode IS NOT NULL AND ActionGeo_CountryCode <> ''
+    GROUP BY 1 ORDER BY events DESC LIMIT {TOP_COUNTRIES}
+""")
+
+leaders = "', '".join(top_countries.country.head(TONE_COUNTRIES))
+tone = q(f"""
+    SELECT Day AS day, ActionGeo_CountryCode AS country, avg(AvgTone) AS tone
+    FROM events
+    WHERE {WINDOW} AND ActionGeo_CountryCode IN ('{leaders}')
+    GROUP BY 1, 2 ORDER BY 1
+""")
+
+QUAD = {1: "verbal coop", 2: "material coop",
+        3: "verbal conflict", 4: "material conflict"}
+quad = q(f"""
+    SELECT Day AS day, QuadClass, count(*) AS events
+    FROM events WHERE {WINDOW}
+    GROUP BY 1, 2 ORDER BY 1, 2
+""")
+quad["class"] = quad.QuadClass.map(QUAD)
+quad["share"] = quad.events / quad.groupby("day").events.transform("sum")
+
+# Plotly draws every figure through the notebook renderer, which hardcodes a
+# MathJax <script> tag. embed-resources would then inline a 2 MB copy of MathJax
+# per chart. No chart here has math in it, so we turn that tag off.
+pio.renderers.default = "notebook"
+_to_html = pio.to_html
+pio.to_html = lambda *a, **kw: _to_html(*a, **{**kw, "include_mathjax": False})
+
+pio.templates["c436"] = pio.templates["plotly_white"]
+pio.templates["c436"].layout.update(
+    font=dict(family="Helvetica, Arial, sans-serif", color=NAVY, size=13),
+    paper_bgcolor=PAPER, plot_bgcolor="white",
+    colorway=[NAVY, AMBER, GREEN, "#6b8fae", "#b8860b", "#7fa88a"],
+    margin=dict(l=56, r=24, t=28, b=64),
+    legend=dict(orientation="h", title_text="", x=0, y=-0.26,
+                yanchor="top", font_size=11, entrywidthmode="fraction"),
+)
+pio.templates.default = "c436"
+```
+
+## Row {height="20%"}
+
+```{python}
+#| content: valuebox
+#| title: "Events in window"
+#| icon: activity
+dict(value = f"{totals.rows_scanned:,}", color = NAVY)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Days covered"
+#| icon: calendar3
+dict(value = f"{totals.days}", color = GREEN)
+```
+
+```{python}
+#| content: valuebox
+#| title: "Row reads on S3"
+#| icon: hdd-network
+dict(value = f"{totals.rows_scanned * queries / 1e6:.2f} M", color = NAVY)
+```
+
+```{python}
+#| content: valuebox
+#| title: "DuckDB query time"
+#| icon: stopwatch
+dict(value = f"{elapsed:.1f} s", color = AMBER)
+```
+
+## Row {height="40%"}
+
+```{python}
+#| title: Events per hour
+fig = px.area(per_hour, x="hour", y="events")
+fig.update_traces(line_color=NAVY, fillcolor="rgba(0,33,69,0.12)")
+fig.update_layout(xaxis_title=None, yaxis_title="events")
+fig
+```
+
+```{python}
+#| title: Top countries by event count
+fig = px.bar(top_countries.sort_values("events"), x="events", y="country",
+             orientation="h")
+fig.update_traces(marker_color=NAVY)
+# tickmode linear keeps every country label, which Plotly otherwise thins out
+fig.update_layout(xaxis_title="events", yaxis_title=None,
+                  yaxis=dict(tickmode="linear", dtick=1, tickfont_size=11))
+fig
+```
+
+## Row {height="40%"}
+
+```{python}
+#| title: Average tone by day
+fig = px.line(tone, x="day", y="tone", color="country", markers=True)
+fig.add_hline(y=0, line_dash="dot", line_color=NAVY, opacity=0.4)
+# px puts the colour column's name on the legend, and horizontal entries collide
+# unless each one is given a share of the width.
+fig.update_layout(xaxis_title=None, yaxis_title="average tone",
+                  legend_title_text="", legend_entrywidth=0.9 / TONE_COUNTRIES)
+fig
+```
+
+```{python}
+#| title: QuadClass mix per day
+fig = px.bar(quad, x="day", y="share", color="class",
+             category_orders={"class": list(QUAD.values())},
+             color_discrete_sequence=[GREEN, "#7fa88a", AMBER, "#b03a2e"])
+fig.update_layout(barmode="stack", xaxis_title=None, yaxis_title="share of events",
+                  yaxis_tickformat=".0%",
+                  legend_title_text="", legend_entrywidth=0.22)
+fig
+```
+
+## Row {.flow}
+
+```{python}
+Markdown(
+    f"Computed at render time: {queries} DuckDB queries over "
+    f"{bounds.first_day:%b %d} to {bounds.last_day:%b %d}, each over the "
+    f"{totals.rows_scanned:,}-row window, about {totals.rows_scanned * queries:,} "
+    f"row reads straight from `{EVENTS}` in {elapsed:.1f} seconds. "
+    f"Nothing was downloaded first."
+)
+```

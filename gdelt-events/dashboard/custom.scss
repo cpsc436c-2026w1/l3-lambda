@@ -1,0 +1,42 @@
+/*-- scss:defaults --*/
+
+$navy:      #002145;
+$amber:     #f2b134;
+$green:     #2b7a3c;
+$offwhite:  #fbf9f4;
+
+$font-family-sans-serif: Helvetica, "Helvetica Neue", Arial, sans-serif;
+$body-bg:      $offwhite;
+$body-color:   $navy;
+$primary:      $navy;
+$secondary:    $green;
+$link-color:   $green;
+
+$card-bg:          #ffffff;
+$card-border-color: rgba(0, 33, 69, 0.12);
+
+/*-- scss:rules --*/
+
+.navbar { background-color: $navy; }
+.navbar .navbar-title, .navbar a { color: $offwhite; }
+
+.card-header {
+  background-color: rgba(0, 33, 69, 0.04);
+  border-bottom: 1px solid $card-border-color;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.value-box-area  { color: #ffffff; }
+.value-box-title { font-size: 0.95rem; opacity: 0.9; }
+.value-box-value {
+  font-weight: 700;
+  font-size: clamp(1.4rem, 2.2vw, 2rem);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+// Value boxes carry their colour as an inline background. The amber one needs
+// dark text; the dark ones need light text.
+.bslib-value-box[style*="f2b134"] .value-box-area,
+.bslib-value-box[style*="f2b134"] .value-box-showcase { color: $navy; }

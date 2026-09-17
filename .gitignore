@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.zip
+*.pyc
+gdelt-events/dashboard/gdelt-dashboard.html
+gdelt-events/dashboard/*_files/
+*.json.tmp
+.pytest_cache/
+.DS_Store
